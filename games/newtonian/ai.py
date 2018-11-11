@@ -4,6 +4,8 @@ from joueur.base_ai import BaseAI
 
 # <<-- Creer-Merge: imports -->> - Code you add between this comment and the end comment will be preserved between Creer re-runs.
 # you can add additional import(s) here
+from games.newtonian.util import *
+import time
 # <<-- /Creer-Merge: imports -->>
 
 class AI(BaseAI):
@@ -71,71 +73,120 @@ class AI(BaseAI):
             bool: Represents if you want to end your turn. True means end your turn, False means to keep your turn going and re-call this function.
         """
         # <<-- Creer-Merge: runTurn -->> - Code you add between this comment and the end comment will be preserved between Creer re-runs.
-        # Put your game logic here for runTurn
+
+        start = time.time()
+        print('Turn %s' % self.game.current_turn)
+
+        assigned_tiles.clear()
+        assigned_physicist_machines.clear()
+
+        interns = [unit for unit in self.player.units if unit.job.title == 'intern']
+        physicists = [unit for unit in self.player.units if unit.job.title == 'physicist']
+        managers = [unit for unit in self.player.units if unit.job.title == 'manager']
+
+        #if self.game.current_turn % 2:
+        if True:
+            #surround_enemies(self, self.player.opponent)
+            safe_fusion(self)
+            print('Turn %s took %s seconds' % (self.game.current_turn, time.time() - start))
+            return True
+
+        # TODO: Remove when they fix act() not taking actions
+        intern_grab_adjacent_ore(self, interns)
+        physicist_act(self, physicists)
+        grab_adjacent_refined(self, managers)
+
+        paths = dict()
+        for unit in interns:
+            if unit.health <= 4:
+                paths[unit] = path_to_goal(self, unit.tile, goal_spawn)
+            elif unit.blueium_ore == unit.job.carry_limit:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_machine_resource('blueium'))
+            elif unit.redium_ore == unit.job.carry_limit:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_machine_resource('redium'))
+            else:
+                #paths[unit] = path_to_goal(self, unit.tile, goal_adjacent_ore)
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_ore)
+                if not paths[unit]:
+                    paths[unit] = path_adjacent_goal(self, unit.tile, goal_conveyor)
+        move_along_paths(self, paths, self.player.units)
+
+        refined = list()
+        for tile in self.game.tiles:
+            if tile.redium or tile.blueium:
+                refined.append(tile)
+        for tile in refined:
+            path = path_to_goal(self, tile,
+                    lambda ai, tile: tile.unit and tile.unit.owner == self.player and tile.unit.job.title == 'manager' and (tile.unit.redium + tile.unit.blueium == 0),
+                    lambda ai, d, fro, tile: not tile.is_wall and not tile.machine and not (tile.unit and tile.unit.owner != self.player))
+            if path:
+                chosen = path[-1].unit
+                #print('chose %s! %s away' % (chosen.id, len(path)))
+                paths[chosen] = list(reversed(path))
+                if tile.machine:
+                    paths[chosen] = paths[chosen][:-1]
+
+        enemy_refined_managers = list()
+        for unit in self.player.opponent.units:
+            if unit.job.title == 'manager' and (unit.blueium or unit.redium):
+                enemy_refined_managers.append(unit)
+        for unit in enemy_refined_managers:
+            path = path_to_goal(self, unit.tile,
+                    lambda ai, tile: tile.unit and tile.unit.owner == self.player and tile.unit.job.title == 'physicist',
+                    lambda ai, d, fro, tile: not tile.is_wall and not tile.machine and not (tile.unit and tile.unit.owner != self.player))
+            if path and len(path) <= 7:
+                print('chase!')
+                chosen = path[-1].unit
+                paths[chosen] = list(reversed(path))[:-1]
+
+
+        for unit in physicists:
+            paths[unit] = flee(self, unit)
+            if paths.get(unit, None):
+                continue
+            elif unit.blueium:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_generator)
+            elif unit.redium:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_generator)
+            else:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_actable_machine)
+                if not paths[unit]:
+                    paths[unit] = path_adjacent_goal(self, unit.tile, goal_stun_attack(unit))
+                if not paths[unit]:
+                    paths[unit] = path_adjacent_goal(self, unit.tile, goal_enemy)
+                if paths[unit]:
+                    for neighbor in paths[unit][-1].get_neighbors():
+                        if neighbor.machine:
+                            assigned_physicist_machines[neighbor] = unit
+
+        move_along_paths(self, paths, self.player.units)
+
+        for unit in managers:
+            paths[unit] = flee(self, unit)
+            if paths.get(unit, None):
+                continue
+            elif unit.blueium:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_generator)
+            elif unit.redium:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_generator)
+            else:
+                paths[unit] = path_adjacent_goal(self, unit.tile, goal_stun_attack(unit))
+                if not paths[unit]:
+                    paths[unit] = path_adjacent_goal(self, unit.tile, goal_enemy)
+        move_along_paths(self, paths, self.player.units)
+
+        intern_grab_adjacent_ore(self, interns)
+        intern_deposit_ore(self, interns)
+        physicist_act(self, physicists)
+        grab_adjacent_refined(self, managers)
+        drop_refined(self, managers)
+
+        attack_adjacent(self, self.player.units)
+
+        print('Turn %s took %s seconds' % (self.game.current_turn, time.time() - start))
+
         return True
         # <<-- /Creer-Merge: runTurn -->>
-
-    def find_path(self, start, goal):
-        """A very basic path finding algorithm (Breadth First Search) that when
-            given a starting Tile, will return a valid path to the goal Tile.
-
-        Args:
-            start (games.newtonian.tile.Tile): the starting Tile
-            goal (games.newtonian.tile.Tile): the goal Tile
-        Returns:
-            list[games.newtonian.tile.Tile]: A list of Tiles
-            representing the path, the the first element being a valid adjacent
-            Tile to the start, and the last element being the goal.
-        """
-
-        if start == goal:
-            # no need to make a path to here...
-            return []
-
-        # queue of the tiles that will have their neighbors searched for 'goal'
-        fringe = []
-
-        # How we got to each tile that went into the fringe.
-        came_from = {}
-
-        # Enqueue start as the first tile to have its neighbors searched.
-        fringe.append(start)
-
-        # keep exploring neighbors of neighbors... until there are no more.
-        while len(fringe) > 0:
-            # the tile we are currently exploring.
-            inspect = fringe.pop(0)
-
-            # cycle through the tile's neighbors.
-            for neighbor in inspect.get_neighbors():
-                # if we found the goal, we have the path!
-                if neighbor == goal:
-                    # Follow the path backward to the start from the goal and
-                    # # return it.
-                    path = [goal]
-
-                    # Starting at the tile we are currently at, insert them
-                    # retracing our steps till we get to the starting tile
-                    while inspect != start:
-                        path.insert(0, inspect)
-                        inspect = came_from[inspect.id]
-                    return path
-                # else we did not find the goal, so enqueue this tile's
-                # neighbors to be inspected
-
-                # if the tile exists, has not been explored or added to the
-                # fringe yet, and it is pathable
-                if neighbor and neighbor.id not in came_from and (
-                    neighbor.is_pathable()
-                ):
-                    # add it to the tiles to be explored and add where it came
-                    # from for path reconstruction.
-                    fringe.append(neighbor)
-                    came_from[neighbor.id] = inspect
-
-        # if you're here, that means that there was not a path to get to where
-        # you want to go; in that case, we'll just return an empty path.
-        return []
 
     # <<-- Creer-Merge: functions -->> - Code you add between this comment and the end comment will be preserved between Creer re-runs.
     # if you need additional functions for your AI you can add them here
